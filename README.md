@@ -1,4 +1,4 @@
-# iHateObviousPhishes
+# iHateObviousPhishes v1.1
 a system designed in python to scam people without actually scamming them
 uses greashen's scam knowledge to scam innocent senior citizens
 

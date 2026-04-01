@@ -11,8 +11,11 @@ app.secret_key = "cyber_exhibit_secret_key"
 
 # --- Configuration & Setup ---
 CAUGHT_DIR = os.path.join(os.getcwd(), "caught_visitors")
-if not os.path.exists(CAUGHT_DIR):
-    os.makedirs(CAUGHT_DIR)
+SLIDES_DIR = os.path.join(os.getcwd(), "slides")
+
+for folder in [CAUGHT_DIR, SLIDES_DIR]:
+    if not os.path.exists(folder):
+        os.makedirs(folder)
 
 # Initialize Camera and Face Detector
 camera = cv2.VideoCapture(0)
@@ -145,6 +148,21 @@ EMAILS = [
         """,
         "is_phish": False,
         "safe_reasons": "Newsletter domains are common and informative. The content lacks urgency and doesn't ask for sensitive credentials."
+    },
+    {
+        "id": 8,
+        "sender_name": "Supercell",
+        "sender_email": "noreply@superceil.com",
+        "subject": "Claim your free gems",
+        "snippet": "Free gems are available to be claimed!",
+        "body_html": """
+            <p>Hey player!</p>
+            <p>As part of our Ramadan evnet, we're are giving 1000 gems to all players, for free!</p>
+            <p>You can clam your rewards by clicking the buton bellow.</p>
+            <button class="cta-btn" style="background:#800000;">Claim Now</button>
+        """,
+        "is_phish": True,
+        "red_flags": "The sender email 'noreply@superceil.com' is not a legitimate domain. Always pay attention to email addresses. The email also includes several typos."
     }
 ]
 
@@ -152,33 +170,29 @@ EMAILS = [
 
 @app.route("/")
 def index():
-    """Main interactive email client."""
     stats["total_visitors"] += 1
     return render_template_string(INDEX_HTML, emails=EMAILS, emails_json=json.dumps(EMAILS))
 
 @app.route("/caught")
 def caught():
-    """Educational breakdown screen."""
     phish_id = session.get('last_email_id', 1)
     email = next((e for e in EMAILS if e['id'] == phish_id), EMAILS[0])
     return render_template_string(CAUGHT_HTML, email=email)
 
 @app.route("/safe")
 def safe():
-    """Success feedback screen."""
     stats["safe_clicks"] += 1
     safe_id = session.get('last_email_id', 5)
     email = next((e for e in EMAILS if e['id'] == safe_id), EMAILS[4])
     return render_template_string(SAFE_HTML, email=email)
 
-@app.route("/carousel")
-def carousel():
-    """Public 'Wall of Phished' live gallery."""
-    return render_template_string(CAROUSEL_HTML)
+@app.route("/display")
+def signage_display():
+    """Public digital signage with scrolling feed."""
+    return render_template_string(DISPLAY_HTML)
 
 @app.route("/admin/login", methods=["GET", "POST"])
 def admin_login():
-    """Admin passcode entry."""
     if request.method == "POST":
         if request.form.get("passcode") == "4344":
             session["admin_auth"] = True
@@ -188,20 +202,16 @@ def admin_login():
 
 @app.route("/admin")
 def admin_dashboard():
-    """Live monitor, statistics, and private gallery."""
     if not session.get("admin_auth"):
         return redirect(url_for("admin_login"))
-    
     images = sorted(os.listdir(CAUGHT_DIR), reverse=True)
     images = [img for img in images if img.endswith(".jpg")]
     return render_template_string(ADMIN_HTML, images=images, stats=stats)
 
 @app.route("/admin/delete/<filename>")
 def delete_image(filename):
-    """Delete a phished photo."""
     if not session.get("admin_auth"):
         return redirect(url_for("admin_login"))
-    
     filepath = os.path.join(CAUGHT_DIR, filename)
     if os.path.exists(filepath):
         os.remove(filepath)
@@ -216,66 +226,69 @@ def logout():
 
 @app.route("/video_feed")
 def video_feed():
-    """Live MJPEG stream for the admin monitor."""
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route("/api/slides")
+def get_slides():
+    """Returns a JSON list of background slide filenames."""
+    slides = [f for f in os.listdir(SLIDES_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+    return jsonify(slides)
 
 @app.route("/api/images")
 def get_images():
-    """Returns a JSON list of all saved image URLs for the carousel."""
-    images = sorted(os.listdir(CAUGHT_DIR), reverse=True)
-    image_urls = [f"/images/{img}" for img in images if img.endswith(".jpg")]
-    return jsonify(image_urls)
+    """Returns image URLs with formatted timestamps."""
+    files = sorted(os.listdir(CAUGHT_DIR), reverse=True)
+    image_data = []
+    for f in files:
+        if f.endswith(".jpg"):
+            path = os.path.join(CAUGHT_DIR, f)
+            mtime = os.path.getmtime(path)
+            timestamp = datetime.fromtimestamp(mtime).strftime("%I:%M %p")
+            image_data.append({
+                "url": f"/images/{f}",
+                "time": timestamp
+            })
+    return jsonify(image_data)
 
 @app.route("/api/capture", methods=["POST"])
 def capture():
-    """Triggers server-side camera capture with face detection."""
     try:
         data = request.json
         session['last_email_id'] = data.get('id')
         stats["phished_clicks"] += 1
-        
         success, frame = camera.read()
         if success:
-            # Face Detection Logic (Strict Settings)
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = face_cascade.detectMultiScale(
-                gray, 
-                scaleFactor=1.2, 
-                minNeighbors=6, 
-                minSize=(100, 100)
-            )
-            
-            # Draw green bounding boxes
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=6, minSize=(100, 100))
             for (x, y, w, h) in faces:
                 cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-            
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"phished_{timestamp}.jpg"
             filepath = os.path.join(CAUGHT_DIR, filename)
             cv2.imwrite(filepath, frame)
-            
             return jsonify({"status": "success"}), 201
-        return jsonify({"status": "error", "message": "Camera failure"}), 500
+        return jsonify({"status": "error"}), 500
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 400
 
 @app.route("/api/track_inspect", methods=["POST"])
 def track_inspect():
-    """Logs when an email is viewed."""
     stats["emails_inspected"] += 1
     return jsonify({"status": "success"})
 
 @app.route("/api/set_session", methods=["POST"])
 def set_session():
-    """Prepares session for safe interaction."""
     data = request.json
     session['last_email_id'] = data.get('id')
     return jsonify({"status": "success"})
 
 @app.route("/images/<path:filename>")
 def serve_image(filename):
-    """Serves images from the caught_visitors directory."""
     return send_from_directory(CAUGHT_DIR, filename)
+
+@app.route("/slides/<path:filename>")
+def serve_slide(filename):
+    return send_from_directory(SLIDES_DIR, filename)
 
 # --- Templates ---
 
@@ -327,24 +340,17 @@ INDEX_HTML = """
             <h1 id="view-subject" class="view-subject"></h1>
             <div class="view-header">
                 <div id="view-avatar" class="avatar"></div>
-                <div class="sender-details">
-                    <strong id="view-sender-name"></strong> 
-                    <span id="view-sender-email" style="color: #5f6368; font-size: 13px; margin-left: 5px;"></span>
-                </div>
+                <div class="sender-details"><strong id="view-sender-name"></strong> <span id="view-sender-email" style="color: #5f6368; font-size: 13px;"></span></div>
             </div>
             <div id="view-body" class="view-body"></div>
         </div>
     </div>
-
     <script>
         const emails = {{ emails_json | safe }};
         function viewEmail(id) {
             const email = emails.find(e => e.id === id);
             if (!email) return;
-
-            // Track inspection
             fetch('/api/track_inspect', { method: 'POST' });
-
             document.getElementById('welcome-msg').style.display = 'none';
             document.getElementById('email-content').style.display = 'block';
             document.getElementById('view-subject').innerText = email.subject;
@@ -352,28 +358,123 @@ INDEX_HTML = """
             document.getElementById('view-sender-email').innerText = `<${email.sender_email}>`;
             document.getElementById('view-avatar').innerText = email.sender_name[0];
             document.getElementById('view-body').innerHTML = email.body_html;
-
             const btn = document.querySelector('#view-body .cta-btn');
             if (btn) {
                 btn.onclick = async () => {
                     if (email.is_phish) {
-                        await fetch('/api/capture', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ id: email.id })
-                        });
+                        await fetch('/api/capture', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: email.id }) });
                         window.location.href = '/caught';
                     } else {
-                        await fetch('/api/set_session', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ id: email.id })
-                        });
+                        await fetch('/api/set_session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: email.id }) });
                         window.location.href = '/safe';
                     }
                 };
             }
         }
+    </script>
+</body>
+</html>
+"""
+
+DISPLAY_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>PHISH FEED - LIVE DISPLAY</title>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: black; font-family: sans-serif; }
+        
+        /* Slideshow Background */
+        #slideshow { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background-size: cover; background-position: center; transition: background-image 1s ease-in-out; z-index: 1; }
+        
+        /* Glassmorphism Sidebar */
+        .sidebar { 
+            position: fixed; top: 0; right: 0; width: 25%; height: 100vh; 
+            background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px);
+            border-left: 1px solid rgba(255, 255, 255, 0.1); z-index: 10; display: flex; flex-direction: column; color: white;
+        }
+        
+        .header { padding: 30px; text-align: center; background: rgba(255, 77, 77, 0.8); box-shadow: 0 5px 15px rgba(0,0,0,0.5); }
+        .header h1 { margin: 0; font-size: 1.5rem; letter-spacing: 2px; text-transform: uppercase; font-weight: 900; }
+        
+        /* Scrolling Feed */
+        #feed-wrapper { flex-grow: 1; overflow: hidden; position: relative; }
+        #scroller { position: absolute; width: 100%; animation: scroll 60s linear infinite; display: flex; flex-direction: column; gap: 30px; padding: 20px; }
+        
+        @keyframes scroll {
+            0% { transform: translateY(0); }
+            100% { transform: translateY(-50%); } /* Loops assuming double-length content */
+        }
+        
+        .phish-card { width: 100%; background: rgba(255, 255, 255, 0.05); border-radius: 12px; overflow: hidden; border: 1px solid rgba(255, 255, 255, 0.1); }
+        .phish-card img { width: 100%; height: auto; display: block; }
+        .phish-card .timestamp { padding: 12px; text-align: center; font-family: monospace; font-size: 1.2rem; color: #ff4d4d; font-weight: bold; background: rgba(0,0,0,0.3); }
+
+        .empty-msg { text-align: center; padding: 50px; color: #666; font-size: 1.2rem; }
+    </style>
+</head>
+<body>
+    <div id="slideshow"></div>
+    
+    <div class="sidebar">
+        <div class="header"><h1>Caught Live Feed</h1></div>
+        <div id="feed-wrapper"><div id="scroller"></div></div>
+    </div>
+
+    <script>
+        let slides = [];
+        let currentSlideIdx = 0;
+        let knownImages = [];
+
+        // 1. Slideshow Logic
+        async function initSlideshow() {
+            const resp = await fetch('/api/slides');
+            slides = await resp.json();
+            if (slides.length > 0) {
+                updateSlide();
+                setInterval(updateSlide, 10000);
+            } else {
+                document.getElementById('slideshow').style.backgroundColor = '#111';
+            }
+        }
+
+        function updateSlide() {
+            const el = document.getElementById('slideshow');
+            el.style.backgroundImage = `url('/slides/${slides[currentSlideIdx]}')`;
+            currentSlideIdx = (currentSlideIdx + 1) % slides.length;
+        }
+
+        // 2. Scrolling Feed Logic
+        async function updateFeed() {
+            const resp = await fetch('/api/images');
+            const images = await resp.json();
+            
+            const scroller = document.getElementById('scroller');
+            
+            // Check for new images
+            if (images.length === 0) {
+                scroller.innerHTML = '<div class="empty-msg">Waiting for visitors...</div>';
+                return;
+            }
+
+            // Simple re-render with duplication for infinite scroll effect
+            // We duplicate the list to ensure the animation can loop seamlessly
+            const renderList = [...images, ...images]; 
+            scroller.innerHTML = renderList.map(img => `
+                <div class="phish-card">
+                    <img src="${img.url}">
+                    <div class="timestamp">PHISHED @ ${img.time}</div>
+                </div>
+            `).join('');
+
+            // Adjust animation duration based on content length
+            scroller.style.animationDuration = (renderList.length * 5) + "s";
+        }
+
+        initSlideshow();
+        updateFeed();
+        setInterval(updateFeed, 5000);
     </script>
 </body>
 </html>
@@ -389,16 +490,14 @@ CAUGHT_HTML = """
         body { background: #000; color: white; font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; text-align: center; }
         .container { max-width: 700px; padding: 40px; border: 5px solid #ff4d4d; border-radius: 20px; background: #111; box-shadow: 0 0 50px rgba(255,77,77,0.3); }
         h1 { font-size: 50px; color: #ff4d4d; margin-top: 0; text-transform: uppercase; }
-        p { font-size: 18px; line-height: 1.6; color: #ccc; }
         .fact-box { background: #222; padding: 25px; border-radius: 10px; text-align: left; margin: 30px 0; border-left: 5px solid #ff4d4d; }
-        .btn { background: #ff4d4d; color: white; border: none; padding: 15px 40px; font-size: 18px; border-radius: 8px; cursor: pointer; font-weight: bold; transition: 0.2s; }
-        .btn:hover { background: #e60000; transform: scale(1.05); }
+        .btn { background: #ff4d4d; color: white; border: none; padding: 15px 40px; font-size: 18px; border-radius: 8px; cursor: pointer; font-weight: bold; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>YOU'VE BEEN PHISHED!</h1>
-        <p>You just clicked on a malicious link in the "{{ email.subject }}" email.</p>
+        <p>You clicked a malicious link in the "{{ email.subject }}" email.</p>
         <div class="fact-box"><strong>WHY THIS WAS A TRAP:</strong><br><br>{{ email.red_flags }}</div>
         <button class="btn" onclick="window.location.href='/'">Return to Exhibit</button>
     </div>
@@ -416,61 +515,17 @@ SAFE_HTML = """
         body { background: #000; color: white; font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; text-align: center; }
         .container { max-width: 700px; padding: 40px; border: 5px solid #2ea44f; border-radius: 20px; background: #111; box-shadow: 0 0 50px rgba(46,164,79,0.3); }
         h1 { font-size: 50px; color: #2ea44f; margin-top: 0; text-transform: uppercase; }
-        p { font-size: 18px; line-height: 1.6; color: #ccc; }
         .fact-box { background: #222; padding: 25px; border-radius: 10px; text-align: left; margin: 30px 0; border-left: 5px solid #2ea44f; }
-        .btn { background: #2ea44f; color: white; border: none; padding: 15px 40px; font-size: 18px; border-radius: 8px; cursor: pointer; font-weight: bold; transition: 0.2s; }
-        .btn:hover { background: #288f44; transform: scale(1.05); }
+        .btn { background: #2ea44f; color: white; border: none; padding: 15px 40px; font-size: 18px; border-radius: 8px; cursor: pointer; font-weight: bold; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>SAFE - GOOD CATCH!</h1>
-        <p>You correctly identified that "{{ email.subject }}" was a legitimate email.</p>
+        <p>You correctly identified that "{{ email.subject }}" was legitimate.</p>
         <div class="fact-box"><strong>WHY THIS WAS SAFE:</strong><br><br>{{ email.safe_reasons }}</div>
         <button class="btn" onclick="window.location.href='/'">Return to Inbox</button>
     </div>
-</body>
-</html>
-"""
-
-CAROUSEL_HTML = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>CAUGHT BY THE PHISH</title>
-    <style>
-        body { background-color: #050505; color: white; font-family: sans-serif; margin: 0; overflow: hidden; }
-        .header { background: linear-gradient(90deg, #ff4d4d, #000); padding: 20px; text-align: center; border-bottom: 2px solid #ff4d4d; }
-        h1 { margin: 0; font-size: 2.5rem; color: #fff; }
-        .grid { display: flex; flex-wrap: wrap; justify-content: center; gap: 20px; padding: 40px; overflow-y: auto; height: calc(100vh - 100px); }
-        .card { width: 300px; height: 350px; background: #111; border: 1px solid #333; border-radius: 10px; overflow: hidden; transition: 0.5s; }
-        .card img { width: 100%; height: 280px; object-fit: cover; }
-        .card .info { padding: 15px; font-family: monospace; color: #ff4d4d; text-align: center; }
-        .card:first-child { border: 2px solid #ff4d4d; transform: scale(1.05); }
-    </style>
-</head>
-<body>
-    <div class="header"><h1>CAUGHT BY THE PHISH - EXHIBIT</h1></div>
-    <div id="image-grid" class="grid"></div>
-    <script>
-        let currentImages = [];
-        async function updateImages() {
-            try {
-                const response = await fetch('/api/images');
-                const images = await response.json();
-                if (JSON.stringify(images) !== JSON.stringify(currentImages)) {
-                    currentImages = images;
-                    const grid = document.getElementById('image-grid');
-                    grid.innerHTML = images.map(url => `
-                        <div class="card"><img src="${url}"><div class="info">PHISHED VISITOR</div></div>
-                    `).join('');
-                }
-            } catch (err) { console.error(err); }
-        }
-        setInterval(updateImages, 3000);
-        updateImages();
-    </script>
 </body>
 </html>
 """
@@ -499,15 +554,10 @@ ADMIN_HTML = """
         body { font-family: sans-serif; margin: 0; background: #f0f2f5; }
         .header { background: #333; color: white; padding: 15px 30px; display: flex; justify-content: space-between; align-items: center; }
         .container { padding: 30px; }
-        
-        /* Stats Styles */
         .stats-row { display: flex; gap: 20px; margin-bottom: 30px; }
         .stat-card { background: white; padding: 20px; border-radius: 10px; flex: 1; box-shadow: 0 2px 5px rgba(0,0,0,0.1); text-align: center; }
         .stat-card h4 { margin: 0; color: #666; font-size: 14px; text-transform: uppercase; }
         .stat-card p { margin: 10px 0 0; font-size: 28px; font-weight: bold; color: #1a73e8; }
-        .stat-phished { color: #d93025 !important; }
-        .stat-safe { color: #188038 !important; }
-
         .dashboard-content { display: flex; gap: 30px; }
         .monitor { background: white; padding: 20px; border-radius: 10px; flex: 1; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
         .gallery { flex: 2; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
@@ -518,32 +568,21 @@ ADMIN_HTML = """
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>EXHIBIT CONTROL CENTER</h1>
-        <a href="/admin/logout" style="color:white; text-decoration:none;">Logout</a>
-    </div>
+    <div class="header"><h1>EXHIBIT CONTROL CENTER</h1><a href="/admin/logout" style="color:white; text-decoration:none;">Logout</a></div>
     <div class="container">
-        <!-- Statistics Section -->
         <div class="stats-row">
             <div class="stat-card"><h4>Total Visitors</h4><p>{{ stats.total_visitors }}</p></div>
             <div class="stat-card"><h4>Emails Read</h4><p>{{ stats.emails_inspected }}</p></div>
-            <div class="stat-card"><h4>Safe Clicks</h4><p class="stat-safe">{{ stats.safe_clicks }}</p></div>
-            <div class="stat-card"><h4>Phished</h4><p class="stat-phished">{{ stats.phished_clicks }}</p></div>
+            <div class="stat-card"><h4>Safe Clicks</h4><p style="color:#188038;">{{ stats.safe_clicks }}</p></div>
+            <div class="stat-card"><h4>Phished</h4><p style="color:#d93025;">{{ stats.phished_clicks }}</p></div>
         </div>
-
         <div class="dashboard-content">
-            <div class="monitor">
-                <h3>Live Feed</h3>
-                <img src="/video_feed" style="width:100%; border-radius:5px; background:#000;">
-            </div>
+            <div class="monitor"><h3>Live Feed</h3><img src="/video_feed" style="width:100%; border-radius:5px; background:#000;"></div>
             <div class="gallery">
                 <h3>Captured Visitors ({{ images|length }})</h3>
                 <div class="grid">
                     {% for img in images %}
-                    <div class="photo-card">
-                        <img src="/images/{{ img }}">
-                        <button class="delete-btn" onclick="if(confirm('Delete?')) location.href='/admin/delete/{{ img }}'">X</button>
-                    </div>
+                    <div class="photo-card"><img src="/images/{{ img }}"><button class="delete-btn" onclick="if(confirm('Delete?')) location.href='/admin/delete/{{ img }}'">X</button></div>
                     {% endfor %}
                 </div>
             </div>
