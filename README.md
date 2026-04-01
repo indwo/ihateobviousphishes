@@ -1,5 +1,6 @@
 ### iHateObviousPhishes
 a system designed in python to scam people without actually scamming them
+uses greashen's scam knowledge to scam innocent senior citizens
 
 ```text
 blinker==1.9.0
